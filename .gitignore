@@ -1,0 +1,17 @@
+# Build outputs
+dist/
+*.exe
+*.exe~
+
+# Windows null device artifact
+nul
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

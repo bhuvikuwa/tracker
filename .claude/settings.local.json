@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)",
+      "Bash(go mod:*)",
+      "Bash(dir:*)",
+      "Bash(powershell -Command \"(Get-Item tracker_test.exe).Length / 1MB\")",
+      "Bash(powershell -Command \"(Get-Item tracker_stripped.exe).Length / 1MB\")",
+      "Bash(powershell -Command:*)",
+      "Bash(cmd /c \"dir /b D:\\xampp\\htdocs\\tracker\\*.go\")",
+      "Bash(del:*)",
+      "Bash(cmd /c:*)",
+      "Bash(cat:*)",
+      "Bash(go get:*)",
+      "Bash(go doc:*)",
+      "Bash(go env:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

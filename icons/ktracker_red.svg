@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Red circle background -->
+  <circle cx="128" cy="128" r="120" fill="#DC3545" />
+
+  <!-- Inner shadow/gradient effect -->
+  <circle cx="128" cy="128" r="100" fill="#E4606D" opacity="0.3" />
+
+  <!-- Clock face (white circle) -->
+  <circle cx="128" cy="128" r="85" fill="#FFFFFF" />
+
+  <!-- Clock center dot -->
+  <circle cx="128" cy="128" r="8" fill="#DC3545" />
+
+  <!-- Hour hand (short, thick) -->
+  <line x1="128" y1="128" x2="128" y2="70" stroke="#333333" stroke-width="8" stroke-linecap="round" />
+
+  <!-- Minute hand (long, medium) -->
+  <line x1="128" y1="128" x2="175" y2="128" stroke="#333333" stroke-width="6" stroke-linecap="round" />
+
+  <!-- Hour markers -->
+  <circle cx="128" cy="53" r="5" fill="#DC3545" />
+  <circle cx="203" cy="128" r="5" fill="#DC3545" />
+  <circle cx="128" cy="203" r="5" fill="#DC3545" />
+  <circle cx="53" cy="128" r="5" fill="#DC3545" />
+
+  <!-- Small hour markers -->
+  <circle cx="165" cy="63" r="3" fill="#CCCCCC" />
+  <circle cx="193" cy="91" r="3" fill="#CCCCCC" />
+  <circle cx="193" cy="165" r="3" fill="#CCCCCC" />
+  <circle cx="165" cy="193" r="3" fill="#CCCCCC" />
+  <circle cx="91" cy="193" r="3" fill="#CCCCCC" />
+  <circle cx="63" cy="165" r="3" fill="#CCCCCC" />
+  <circle cx="63" cy="91" r="3" fill="#CCCCCC" />
+  <circle cx="91" cy="63" r="3" fill="#CCCCCC" />
+</svg>

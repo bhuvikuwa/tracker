@@ -1,0 +1,40 @@
+// KTracker Windows Resource File
+// Compile with: windres -o ktracker.syso ktracker.rc
+
+#include "winver.h"
+
+// Application icon
+IDI_ICON1 ICON "../../icons/ktracker.ico"
+
+// Version information
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "KTracker"
+            VALUE "FileDescription", "KTracker Activity Tracker"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "KTracker"
+            VALUE "LegalCopyright", "Copyright (C) 2025"
+            VALUE "OriginalFilename", "KTracker.exe"
+            VALUE "ProductName", "KTracker"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04B0
+    END
+END
+
+// Application manifest for Windows
+1 24 "ktracker.manifest"
