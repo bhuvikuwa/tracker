@@ -95,21 +95,6 @@ func NewTracker(ctx context.Context, cfg *config.Config, db *storage.Database) (
 		screenshotMgr.SetIsUserActiveCallback(func() bool {
 			return actTracker.IsUserActive()
 		})
-		// Set callback to get current activity info for screenshots
-		screenshotMgr.SetGetCurrentActivityCallback(func() *capture.CurrentActivityInfo {
-			currentActivity := actTracker.GetCurrentActivity()
-			if currentActivity == nil {
-				return nil
-			}
-			info := &capture.CurrentActivityInfo{
-				AppName: currentActivity.AppName,
-				AppIcon: currentActivity.AppIcon,
-			}
-			if currentActivity.BrowserURL != nil {
-				info.BrowserURL = *currentActivity.BrowserURL
-			}
-			return info
-		})
 		tracker.screenshotMgr = screenshotMgr
 	}
 

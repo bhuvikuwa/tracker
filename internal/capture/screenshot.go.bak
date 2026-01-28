@@ -14,19 +14,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// CurrentActivityInfo contains the current activity information for screenshots
-type CurrentActivityInfo struct {
-	AppName    string
-	BrowserURL string
-	AppIcon    string
-}
-
 // ScreenshotManager manages screenshot capture
 type ScreenshotManager struct {
-	cfg                *config.Config
-	db                 *storage.Database
-	isUserActive       func() bool                 // Callback to check if user is active
-	getCurrentActivity func() *CurrentActivityInfo // Callback to get current activity info
+	cfg            *config.Config
+	db             *storage.Database
+	isUserActive   func() bool // Callback to check if user is active
 }
 
 // NewScreenshotManager creates a new screenshot manager
@@ -40,11 +32,6 @@ func NewScreenshotManager(cfg *config.Config, db *storage.Database) (*Screenshot
 // SetIsUserActiveCallback sets the callback to check if user is active
 func (sm *ScreenshotManager) SetIsUserActiveCallback(callback func() bool) {
 	sm.isUserActive = callback
-}
-
-// SetGetCurrentActivityCallback sets the callback to get current activity info
-func (sm *ScreenshotManager) SetGetCurrentActivityCallback(callback func() *CurrentActivityInfo) {
-	sm.getCurrentActivity = callback
 }
 
 // Start starts the screenshot capture process
@@ -113,18 +100,8 @@ func (sm *ScreenshotManager) captureAndSendScreenshot() error {
 		logrus.Infof("Display %d screenshot captured: %dx%d, base64 length: %d",
 			i, bounds.Dx(), bounds.Dy(), len(base64Data))
 
-		// Get current activity info for the screenshot
-		var appName, browserURL, appIcon string
-		if sm.getCurrentActivity != nil {
-			if activityInfo := sm.getCurrentActivity(); activityInfo != nil {
-				appName = activityInfo.AppName
-				browserURL = activityInfo.BrowserURL
-				appIcon = activityInfo.AppIcon
-			}
-		}
-
-		// Send to API with display index and activity info
-		result, err := sm.db.InsertScreenshot(base64Data, i, numDisplays, appName, browserURL, appIcon)
+		// Send to API with display index
+		result, err := sm.db.InsertScreenshot(base64Data, i, numDisplays)
 		if err != nil {
 			logrus.Errorf("Failed to upload display %d screenshot: %v", i, err)
 			continue

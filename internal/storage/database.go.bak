@@ -197,10 +197,7 @@ type ScreenshotUploadResult struct {
 // Returns ScreenshotUploadResult with success status
 // displayIndex: 0-based index of the display (0 = primary, 1 = secondary, etc.)
 // totalDisplays: total number of displays being captured
-// appName: current active application name
-// browserURL: current browser URL (if screenshot is from a browser)
-// appIcon: base64 encoded app icon
-func (d *Database) InsertScreenshot(screenshotBase64 string, displayIndex int, totalDisplays int, appName string, browserURL string, appIcon string) (*ScreenshotUploadResult, error) {
+func (d *Database) InsertScreenshot(screenshotBase64 string, displayIndex int, totalDisplays int) (*ScreenshotUploadResult, error) {
 	result := &ScreenshotUploadResult{Success: false}
 
 	// Don't send screenshot if email is not set (user not logged in)
@@ -219,9 +216,6 @@ func (d *Database) InsertScreenshot(screenshotBase64 string, displayIndex int, t
 		"timezone":       utils.GetSystemTimezone(),
 		"display_index":  displayIndex,
 		"total_displays": totalDisplays,
-		"app_name":       appName,
-		"browser_url":    browserURL,
-		"app_icon":       appIcon,
 	}
 
 	// Encode JSON
