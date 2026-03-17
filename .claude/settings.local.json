@@ -13,7 +13,18 @@
       "Bash(cat:*)",
       "Bash(go get:*)",
       "Bash(go doc:*)",
-      "Bash(go env:*)"
+      "Bash(go env:*)",
+      "Bash(findstr:*)",
+      "Bash(where iscc)",
+      "Bash(where:*)",
+      "Bash(where \"C:\\\\Program Files\\\\Inno Setup 6\\\\ISCC.exe\")",
+      "Bash(powershell.exe -NoProfile -Command \"Get-ChildItem ''HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\CapabilityAccessManager'' -Recurse -Depth 1 2>&1 | Out-String\")",
+      "Bash(powershell.exe -NoProfile -Command \"Get-ChildItem ''HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\CapabilityAccessManager\\\\ConsentStore\\\\webcam'' -Recurse 2>&1 | Out-String\")",
+      "Bash(powershell.exe -NoProfile -Command \"Get-ChildItem ''HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\CapabilityAccessManager\\\\ConsentStore\\\\microphone'' -Recurse 2>&1 | Out-String\")",
+      "Bash(powershell.exe -NoProfile -Command \"Get-ChildItem ''C:\\\\Program Files*\\\\Inno Setup*'' -ErrorAction SilentlyContinue | Select-Object FullName\")",
+      "Bash(go vet:*)",
+      "Bash(cmd.exe:*)",
+      "Bash(\"C:\\\\Program Files \\(x86\\)\\\\Inno Setup 6\\\\ISCC.exe\" \"C:\\\\Users\\\\Bhuvi\\\\Documents\\\\GitHub\\\\tracker\\\\installer\\\\ktracker_setup.iss\")"
     ],
     "deny": [],
     "ask": []

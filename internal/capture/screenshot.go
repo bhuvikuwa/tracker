@@ -7,8 +7,8 @@ import (
 	"image/png"
 	"time"
 
-	"desktime-tracker/internal/config"
-	"desktime-tracker/internal/storage"
+	"ktracker/internal/config"
+	"ktracker/internal/storage"
 
 	"github.com/kbinani/screenshot"
 	"github.com/sirupsen/logrus"
@@ -47,13 +47,20 @@ func (sm *ScreenshotManager) SetGetCurrentActivityCallback(callback func() *Curr
 	sm.getCurrentActivity = callback
 }
 
+// getScreenshotInterval returns the current screenshot interval
+// Uses User.ScreenshotTime from server if set, otherwise defaults to 300 seconds
+func (sm *ScreenshotManager) getScreenshotInterval() time.Duration {
+	// Use server-provided interval if available and valid
+	if sm.cfg.User.ScreenshotTime > 0 {
+		return time.Duration(sm.cfg.User.ScreenshotTime) * time.Second
+	}
+	// Default to 300 seconds (5 minutes) if not set by server
+	return 300 * time.Second
+}
+
 // Start starts the screenshot capture process
 func (sm *ScreenshotManager) Start(ctx context.Context) error {
 	logrus.Info("Starting screenshot manager")
-
-	interval := time.Duration(sm.cfg.Tracking.ScreenshotInterval) * time.Second
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 
 	// Take initial screenshot
 	if err := sm.captureAndSendScreenshot(); err != nil {
@@ -61,8 +68,12 @@ func (sm *ScreenshotManager) Start(ctx context.Context) error {
 	}
 
 	for {
+		// Get current interval (can change dynamically via login/refresh)
+		interval := sm.getScreenshotInterval()
+		logrus.Debugf("Next screenshot in %v", interval)
+
 		select {
-		case <-ticker.C:
+		case <-time.After(interval):
 			if err := sm.captureAndSendScreenshot(); err != nil {
 				logrus.Errorf("Failed to capture screenshot: %v", err)
 			}
@@ -138,7 +149,3 @@ func (sm *ScreenshotManager) captureAndSendScreenshot() error {
 	return nil
 }
 
-// CaptureManual manually captures a screenshot
-func (sm *ScreenshotManager) CaptureManual() error {
-	return sm.captureAndSendScreenshot()
-}

@@ -5,8 +5,8 @@ package activity
 
 import (
 	"strings"
-	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/go-ole/go-ole"
@@ -136,21 +136,34 @@ const (
 
 // URLExtractorUIA uses Windows UI Automation to get browser URLs
 type URLExtractorUIA struct {
-	mu          sync.Mutex
+	sem         chan struct{} // 1-buffered semaphore: prevents goroutine pileup while allowing context-aware waiting
 	initialized bool
 	automation  *ole.IUnknown
+
+	// Cache address bar element to avoid tree search on every call
+	cachedHwnd       win.HWND
+	cachedProcess    string
+	cachedAddressBar *ole.IUnknown
 }
 
 // NewURLExtractorUIA creates a new UI Automation based URL extractor
 func NewURLExtractorUIA() *URLExtractorUIA {
-	return &URLExtractorUIA{}
+	u := &URLExtractorUIA{
+		sem: make(chan struct{}, 1),
+	}
+	u.sem <- struct{}{} // pre-fill: ready to acquire
+	return u
 }
 
-// Initialize initializes COM and UI Automation
+// Initialize initializes COM and UI Automation (public method with serialization)
 func (u *URLExtractorUIA) Initialize() error {
-	u.mu.Lock()
-	defer u.mu.Unlock()
+	<-u.sem // acquire semaphore (blocks until available)
+	defer func() { u.sem <- struct{}{} }()
+	return u.initializeInternal()
+}
 
+// initializeInternal initializes COM and UI Automation (must be called with lock held)
+func (u *URLExtractorUIA) initializeInternal() error {
 	if u.initialized {
 		return nil
 	}
@@ -179,8 +192,16 @@ func (u *URLExtractorUIA) Initialize() error {
 
 // Cleanup releases COM resources
 func (u *URLExtractorUIA) Cleanup() {
-	u.mu.Lock()
-	defer u.mu.Unlock()
+	<-u.sem // acquire semaphore (waits for any in-flight URL extraction to finish)
+	defer func() { u.sem <- struct{}{} }()
+
+	// Clear cached address bar element
+	if u.cachedAddressBar != nil {
+		u.cachedAddressBar.Release()
+		u.cachedAddressBar = nil
+	}
+	u.cachedHwnd = 0
+	u.cachedProcess = ""
 
 	if u.automation != nil {
 		u.automation.Release()
@@ -193,37 +214,125 @@ func (u *URLExtractorUIA) Cleanup() {
 }
 
 // GetBrowserURL gets the URL from a browser window using UI Automation
+// Uses a channel-based semaphore to:
+//   - Wait for any previous slow call to finish (instead of immediately giving up)
+//   - Prevent goroutine pileup (no goroutine spawned until semaphore acquired)
+//   - Enforce a 500ms total deadline across wait + work
 func (u *URLExtractorUIA) GetBrowserURL(hwnd win.HWND, processName string) string {
-	u.mu.Lock()
-	defer u.mu.Unlock()
+	deadline := time.After(500 * time.Millisecond)
 
-	if !u.initialized || u.automation == nil {
+	// Wait for semaphore: if a previous call is still running (e.g. slow COM call),
+	// we wait here instead of spawning blocked goroutines. Once the previous call
+	// finishes, we acquire and run a fresh query.
+	select {
+	case <-u.sem:
+		// Acquired - previous call is done
+	case <-deadline:
+		// Previous call truly stuck (browser frozen) - fall back to title parsing
+		return ""
+	}
+
+	// We hold the semaphore. Spawn goroutine to do COM work.
+	// No pileup possible: only one goroutine runs at a time.
+	resultChan := make(chan string, 1)
+
+	go func() {
+		defer func() { u.sem <- struct{}{} }() // release semaphore when done
+		result := u.getBrowserURLInternal(hwnd, processName)
+		select {
+		case resultChan <- result:
+		default:
+		}
+	}()
+
+	// Wait for result with remaining time from the same 500ms deadline
+	select {
+	case url := <-resultChan:
+		return url
+	case <-deadline:
+		// COM call took too long - goroutine will finish and release semaphore
+		return ""
+	}
+}
+
+// getBrowserURLInternal performs the actual UI Automation query
+// Must be called with semaphore held (serialized access)
+func (u *URLExtractorUIA) getBrowserURLInternal(hwnd win.HWND, processName string) string {
+	// Lazy initialization - initialize on first use to avoid startup delay
+	if !u.initialized {
+		if err := u.initializeInternal(); err != nil {
+			return ""
+		}
+	}
+
+	if u.automation == nil {
 		return ""
 	}
 
 	processName = strings.ToLower(processName)
 
-	// Get element from window handle
+	// Check if we have a cached address bar element for this window
+	if u.cachedAddressBar != nil && u.cachedHwnd == hwnd && u.cachedProcess == processName {
+		// Use cached element - just read the URL value (no tree search!)
+		url := u.getPropertyString(u.cachedAddressBar, UIA_ValueValuePropertyId)
+		if url == "" {
+			url = u.getPropertyString(u.cachedAddressBar, UIA_LegacyAccessibleValuePropertyId)
+		}
+		if url != "" && (strings.HasPrefix(url, "http") || strings.Contains(url, ".")) {
+			return normalizeURL(url)
+		}
+		// Cached element no longer valid, clear cache and search again
+		u.clearCache()
+	}
+
+	// Different window or no cache - need to search for address bar
 	element := u.elementFromHandle(hwnd)
 	if element == nil {
 		return ""
 	}
 	defer element.Release()
 
-	// Extract URL based on browser type
-	var url string
+	// Find and cache the address bar element
+	var addressBar *ole.IUnknown
 	switch processName {
-	case "chrome.exe", "brave.exe", "vivaldi.exe", "msedge.exe":
-		url = u.getChromeBasedURLWithProcess(element, processName)
+	case "chrome.exe", "brave.exe", "vivaldi.exe", "msedge.exe", "opera.exe":
+		addressBar = u.findAddressBarDirect(element, processName)
 	case "firefox.exe":
-		url = u.getFirefoxURL(element)
-	case "opera.exe":
-		url = u.getOperaURL(element)
+		addressBar = u.findAddressBarDirect(element, "firefox.exe")
 	default:
-		url = u.getGenericURL(element)
+		return ""
 	}
 
-	return url
+	if addressBar == nil {
+		return ""
+	}
+
+	// Cache the address bar element for future calls
+	u.clearCache() // Clear old cache first
+	u.cachedHwnd = hwnd
+	u.cachedProcess = processName
+	u.cachedAddressBar = addressBar // Don't release - we're caching it
+
+	// Read URL from the newly found address bar
+	url := u.getPropertyString(addressBar, UIA_ValueValuePropertyId)
+	if url == "" {
+		url = u.getPropertyString(addressBar, UIA_LegacyAccessibleValuePropertyId)
+	}
+	if url != "" && (strings.HasPrefix(url, "http") || strings.Contains(url, ".")) {
+		return normalizeURL(url)
+	}
+
+	return ""
+}
+
+// clearCache releases the cached address bar element
+func (u *URLExtractorUIA) clearCache() {
+	if u.cachedAddressBar != nil {
+		u.cachedAddressBar.Release()
+		u.cachedAddressBar = nil
+	}
+	u.cachedHwnd = 0
+	u.cachedProcess = ""
 }
 
 // elementFromHandle gets UI Automation element from window handle
@@ -247,65 +356,6 @@ func (u *URLExtractorUIA) elementFromHandle(hwnd win.HWND) *ole.IUnknown {
 	}
 
 	return element
-}
-
-// getChromeBasedURL extracts URL from Chrome-based browsers (Chrome, Edge, Brave, Vivaldi)
-func (u *URLExtractorUIA) getChromeBasedURL(element *ole.IUnknown) string {
-	return u.getChromeBasedURLWithProcess(element, "chrome.exe")
-}
-
-// getChromeBasedURLWithProcess extracts URL from Chrome-based browsers with process name
-func (u *URLExtractorUIA) getChromeBasedURLWithProcess(element *ole.IUnknown, processName string) string {
-	// Direct address bar lookup only - no slow fallback
-	addressBar := u.findAddressBarDirect(element, processName)
-	if addressBar == nil {
-		return ""
-	}
-	defer addressBar.Release()
-
-	url := u.getPropertyString(addressBar, UIA_ValueValuePropertyId)
-	if url == "" {
-		url = u.getPropertyString(addressBar, UIA_LegacyAccessibleValuePropertyId)
-	}
-
-	if url != "" && (strings.HasPrefix(url, "http") || strings.Contains(url, ".")) {
-		return normalizeURL(url)
-	}
-
-	return ""
-}
-
-// getFirefoxURL extracts URL from Firefox
-func (u *URLExtractorUIA) getFirefoxURL(element *ole.IUnknown) string {
-	// Direct address bar lookup only - no slow fallback
-	addressBar := u.findAddressBarDirect(element, "firefox.exe")
-	if addressBar == nil {
-		return ""
-	}
-	defer addressBar.Release()
-
-	url := u.getPropertyString(addressBar, UIA_ValueValuePropertyId)
-	if url == "" {
-		url = u.getPropertyString(addressBar, UIA_LegacyAccessibleValuePropertyId)
-	}
-
-	if url != "" && (strings.HasPrefix(url, "http") || strings.Contains(url, ".")) {
-		return normalizeURL(url)
-	}
-
-	return ""
-}
-
-// getOperaURL extracts URL from Opera browser
-func (u *URLExtractorUIA) getOperaURL(element *ole.IUnknown) string {
-	// Opera is Chromium-based, similar to Chrome
-	return u.getChromeBasedURLWithProcess(element, "opera.exe")
-}
-
-// getGenericURL tries to find URL in any browser
-// Returns empty - let title parsing handle unknown browsers to avoid slow element iteration
-func (u *URLExtractorUIA) getGenericURL(element *ole.IUnknown) string {
-	return ""
 }
 
 // findFirst finds the first element matching the condition
@@ -530,77 +580,6 @@ func (u *URLExtractorUIA) createControlTypeCondition(controlType int) *ole.IUnkn
 	}
 
 	return condition
-}
-
-// findAll finds all elements matching the condition
-func (u *URLExtractorUIA) findAll(element *ole.IUnknown, scope int, condition *ole.IUnknown) *ole.IUnknown {
-	if element == nil || condition == nil {
-		return nil
-	}
-
-	vt := (*[100]uintptr)(unsafe.Pointer(element.RawVTable))
-
-	var result *ole.IUnknown
-	ret, _, _ := syscall.SyscallN(
-		vt[elem_FindAll],
-		uintptr(unsafe.Pointer(element)),
-		uintptr(scope),
-		uintptr(unsafe.Pointer(condition)),
-		uintptr(unsafe.Pointer(&result)),
-	)
-
-	if ret != 0 {
-		return nil
-	}
-
-	return result
-}
-
-// getElementArrayLength gets the number of elements in an element array
-func (u *URLExtractorUIA) getElementArrayLength(array *ole.IUnknown) int {
-	if array == nil {
-		return 0
-	}
-
-	vt := (*[10]uintptr)(unsafe.Pointer(array.RawVTable))
-
-	var length int32
-	// IUIAutomationElementArray::get_Length is at index 3
-	ret, _, _ := syscall.SyscallN(
-		vt[3],
-		uintptr(unsafe.Pointer(array)),
-		uintptr(unsafe.Pointer(&length)),
-	)
-
-	if ret != 0 {
-		return 0
-	}
-
-	return int(length)
-}
-
-// getElementAtIndex gets an element at the specified index
-func (u *URLExtractorUIA) getElementAtIndex(array *ole.IUnknown, index int) *ole.IUnknown {
-	if array == nil {
-		return nil
-	}
-
-	vt := (*[10]uintptr)(unsafe.Pointer(array.RawVTable))
-
-	var element *ole.IUnknown
-	// IUIAutomationElementArray::GetElement is at index 4
-	ret, _, _ := syscall.SyscallN(
-		vt[4],
-		uintptr(unsafe.Pointer(array)),
-		uintptr(index),
-		uintptr(unsafe.Pointer(&element)),
-	)
-
-	if ret != 0 {
-		return nil
-	}
-
-	return element
 }
 
 // getPropertyString gets a string property from an element

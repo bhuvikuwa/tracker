@@ -8,9 +8,10 @@ import (
 	"net/http"
 	"time"
 
-	"desktime-tracker/internal/config"
-	"desktime-tracker/internal/models"
-	"desktime-tracker/internal/utils"
+	"ktracker/internal/buffer"
+	"ktracker/internal/config"
+	"ktracker/internal/models"
+	"ktracker/internal/utils"
 
 	"github.com/sirupsen/logrus"
 )
@@ -20,10 +21,12 @@ type Database struct {
 	apiURL                 string
 	appCode                string
 	email                  string
+	appVersion             string    // App version to send with every request
 	httpClient             *http.Client
 	onLogoutCallback       func() // Callback to trigger logout when API returns failure
 	onNotLoggedInCallback  func() // Callback when data is skipped due to no login
 	lastNotLoggedInNotify  time.Time // Rate limit notifications
+	activityBuffer         *buffer.ActivityBuffer // Local SQLite buffer for failed uploads
 }
 
 // NewDatabase creates a new database connection
@@ -35,14 +38,33 @@ func NewDatabase(cfg config.APIConfig) (*Database, error) {
 		},
 	}
 
+	// Initialize activity buffer for offline/failure resilience
+	actBuffer, err := buffer.NewActivityBuffer()
+	if err != nil {
+		logrus.Warnf("Failed to initialize activity buffer (activities won't be buffered): %v", err)
+	} else {
+		database.activityBuffer = actBuffer
+		logrus.Info("Activity buffer initialized for offline resilience")
+	}
+
 	logrus.Info("HTTP API client initialized successfully")
 	return database, nil
 }
 
 // Close closes the database connection
 func (d *Database) Close() error {
-	// Nothing to close for HTTP client
+	// Close activity buffer if initialized
+	if d.activityBuffer != nil {
+		if err := d.activityBuffer.Close(); err != nil {
+			logrus.Warnf("Error closing activity buffer: %v", err)
+		}
+	}
 	return nil
+}
+
+// GetActivityBuffer returns the activity buffer for use by sync worker
+func (d *Database) GetActivityBuffer() *buffer.ActivityBuffer {
+	return d.activityBuffer
 }
 
 // SetAppCode sets the app code for authentication
@@ -55,6 +77,25 @@ func (d *Database) SetAppCode(appCode string) {
 func (d *Database) SetEmail(email string) {
 	d.email = email
 	logrus.Infof("Email updated for API requests: %s", email)
+}
+
+// SetAppVersion sets the app version for API requests
+func (d *Database) SetAppVersion(version string) {
+	d.appVersion = version
+	logrus.Infof("App version set for API requests: %s", version)
+}
+
+// SetAPIURL updates the API URL for requests (can be changed remotely)
+func (d *Database) SetAPIURL(url string) {
+	if url != "" && url != d.apiURL {
+		logrus.Infof("API URL updated: %s -> %s", d.apiURL, url)
+		d.apiURL = url
+	}
+}
+
+// GetAPIURL returns the current API URL
+func (d *Database) GetAPIURL() string {
+	return d.apiURL
 }
 
 // SetLogoutCallback sets the callback function to trigger logout on API failure
@@ -87,6 +128,20 @@ func (d *Database) triggerLogout() {
 	}
 }
 
+// bufferActivity stores an activity in the local SQLite buffer for later retry
+func (d *Database) bufferActivity(payload map[string]interface{}) {
+	if d.activityBuffer == nil {
+		logrus.Warn("Activity buffer not available - activity will be lost")
+		return
+	}
+
+	if err := d.activityBuffer.BufferActivity(d.email, payload); err != nil {
+		logrus.Errorf("Failed to buffer activity: %v", err)
+	} else {
+		logrus.Info("Activity buffered for later sync")
+	}
+}
+
 // InsertActivity inserts an activity record via HTTP POST
 func (d *Database) InsertActivity(activity *models.Activity) error {
 	// Don't send activity if email is not set (user not logged in)
@@ -96,9 +151,17 @@ func (d *Database) InsertActivity(activity *models.Activity) error {
 		return nil
 	}
 
+	// Log the times being sent
+	logrus.Infof("SENDING ACTIVITY: app=%s | start=%s (%d) | end=%s (%d) | duration=%ds",
+		activity.AppName,
+		activity.StartTime.Format("15:04:05"), activity.StartTime.UTC().Unix(),
+		activity.EndTime.Format("15:04:05"), activity.EndTime.UTC().Unix(),
+		activity.DurationSeconds)
+
 	payload := map[string]interface{}{
-		"function": "submit_activity",
-		"email":    d.email,
+		"function":    "submit_activity",
+		"email":       d.email,
+		"app_version": d.appVersion,
 		"data": map[string]interface{}{
 			"app_name":         activity.AppName,
 			"window_title":     activity.WindowTitle,
@@ -136,7 +199,9 @@ func (d *Database) InsertActivity(activity *models.Activity) error {
 	resp, err := d.httpClient.Post(d.apiURL, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		logrus.Errorf("Failed to send activity data: %v", err)
-		return fmt.Errorf("failed to send activity data: %w", err)
+		// Buffer the activity for later retry
+		d.bufferActivity(payload)
+		return nil // Return success to caller - activity is buffered
 	}
 	defer resp.Body.Close()
 
@@ -157,7 +222,9 @@ func (d *Database) InsertActivity(activity *models.Activity) error {
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		logrus.Warnf("Failed to insert activity, status: %d", resp.StatusCode)
-		return nil // Don't return error, just skip
+		// Buffer the activity for later retry
+		d.bufferActivity(payload)
+		return nil // Return success to caller - activity is buffered
 	}
 
 	// Parse JSON response to check success status
@@ -173,10 +240,17 @@ func (d *Database) InsertActivity(activity *models.Activity) error {
 		return nil
 	}
 
-	// If API returns success=false, trigger logout
+	// If API returns success=false, check if it's an auth error or transient error
 	if !apiResponse.Success {
 		logrus.Errorf("Activity submission failed - API returned success=false. Error: %s, ErrorCode: %s", apiResponse.Error, apiResponse.ErrorCode)
-		d.triggerLogout()
+
+		// Only trigger logout for authentication errors, buffer for other errors
+		if apiResponse.ErrorCode == "invalid_credentials" || apiResponse.ErrorCode == "unauthorized" {
+			d.triggerLogout()
+		} else {
+			// Buffer the activity for later retry (server-side error, rate limit, etc.)
+			d.bufferActivity(payload)
+		}
 		return nil
 	}
 
@@ -214,6 +288,7 @@ func (d *Database) InsertScreenshot(screenshotBase64 string, displayIndex int, t
 	payload := map[string]interface{}{
 		"function":       "submit_screenshot",
 		"email":          d.email,
+		"app_version":    d.appVersion,
 		"screenshot":     screenshotBase64,
 		"captured_at":    time.Now().UTC().Unix(),
 		"timezone":       utils.GetSystemTimezone(),
@@ -298,26 +373,3 @@ func (d *Database) InsertScreenshot(screenshotBase64 string, displayIndex int, t
 	return result, nil
 }
 
-// GetRecentActivity gets recent activity records (not implemented for HTTP API)
-func (d *Database) GetRecentActivity(userID int, limit int) ([]models.Activity, error) {
-	logrus.Warn("GetRecentActivity not implemented for HTTP API")
-	return []models.Activity{}, nil
-}
-
-// GetRecentScreenshots gets recent screenshot records (not implemented for HTTP API)
-func (d *Database) GetRecentScreenshots(userID int, limit int) ([]models.Screenshot, error) {
-	logrus.Warn("GetRecentScreenshots not implemented for HTTP API")
-	return []models.Screenshot{}, nil
-}
-
-// GetDailyActivitySummary gets daily activity summary (not implemented for HTTP API)
-func (d *Database) GetDailyActivitySummary(userID int, date string) (map[string]interface{}, error) {
-	logrus.Warn("GetDailyActivitySummary not implemented for HTTP API")
-	return make(map[string]interface{}), nil
-}
-
-// CleanupOldData removes old data based on retention policy (not implemented for HTTP API)
-func (d *Database) CleanupOldData(retentionDays int) error {
-	logrus.Debug("CleanupOldData not applicable for HTTP API")
-	return nil
-}

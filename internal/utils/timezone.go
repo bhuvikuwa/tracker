@@ -12,9 +12,3 @@ func GetSystemTimezone() string {
 	return fmt.Sprintf("%s (UTC%+d)", tzName, tzOffset/3600)
 }
 
-// GetTimezoneInfo returns timezone name and offset separately
-func GetTimezoneInfo() (name string, offsetHours int) {
-	name, offsetSeconds := time.Now().Zone()
-	offsetHours = offsetSeconds / 3600
-	return name, offsetHours
-}

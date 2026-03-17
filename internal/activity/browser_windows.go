@@ -6,7 +6,7 @@ package activity
 import (
 	"strings"
 
-	"desktime-tracker/internal/config"
+	"ktracker/internal/config"
 
 	"github.com/lxn/win"
 )
@@ -31,11 +31,8 @@ func NewBrowserManager(cfg *config.Config) *BrowserManager {
 		"applicationframehost.exe": true,
 	}
 
-	// Create UI Automation extractor
+	// Create UI Automation extractor (lazy initialization - will init on first use)
 	uiaExtractor := NewURLExtractorUIA()
-	if err := uiaExtractor.Initialize(); err != nil {
-		// Log error but continue - will fall back to title parsing
-	}
 
 	return &BrowserManager{
 		cfg:              cfg,

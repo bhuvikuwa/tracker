@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"desktime-tracker/internal/models"
+	"ktracker/internal/models"
 
 	"github.com/sirupsen/logrus"
 )
@@ -144,18 +144,6 @@ func (kh *KeyboardHook) GetStats() map[string]interface{} {
 		"session_keystrokes": kh.stats.SessionKeystrokes,
 		"last_activity":      kh.stats.LastActivity,
 		"uptime_seconds":     int(time.Since(kh.stats.StartTime).Seconds()),
-	}
-}
-
-// GetCurrentInfo returns current keyboard information
-func (kh *KeyboardHook) GetCurrentInfo() *models.KeyboardInfo {
-	kh.mu.RLock()
-	defer kh.mu.RUnlock()
-	
-	// Return a copy to avoid race conditions
-	return &models.KeyboardInfo{
-		KeystrokeCount: kh.keyboardInfo.KeystrokeCount,
-		LastActivity:   kh.keyboardInfo.LastActivity,
 	}
 }
 

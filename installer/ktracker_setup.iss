@@ -2,7 +2,7 @@
 ; Download Inno Setup from: https://jrsoftware.org/isinfo.php
 
 #define MyAppName "KTracker"
-#define MyAppVersion "2.0.0"
+#define MyAppVersion "3.22.0"
 #define MyAppPublisher "KuWare"
 #define MyAppURL "https://desktime.kuware.com"
 #define MyAppExeName "KTracker.exe"
@@ -13,7 +13,7 @@
 AppId={{8F3C5E2A-9D4B-4C1E-A8F7-6B2D9E4A5C3F}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion}
+AppVerName={#MyAppName}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
@@ -62,11 +62,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "startupicon"; Description: "Start KTracker automatically with Windows"; GroupDescription: "Startup options:"
 
 [Files]
 ; Main executable (config and icons are embedded - no external files needed)
-Source: "..\KTracker.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\KTracker_{#MyAppVersion}.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
 
 [Dirs]
 ; Create AppData directory with proper permissions
@@ -80,12 +79,18 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 ; Desktop icon (checked by default)
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
-; Startup folder (runs at Windows startup)
-Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startupicon
-
 [Run]
 ; Option to launch after install
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[Registry]
+; Clean up any auto-start registry entry on uninstall
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "{#MyAppName}"; Flags: uninsdeletevalue
+
+; Register kt-tracker:// protocol handler
+Root: HKCU; Subkey: "Software\Classes\kt-tracker"; ValueType: string; ValueData: "URL:KTracker Protocol"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\kt-tracker"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\kt-tracker\shell\open\command"; ValueType: string; ValueData: """{app}\KTracker.exe"" ""%1"""
 
 [UninstallRun]
 ; Stop the application before uninstall

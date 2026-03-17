@@ -19,6 +19,7 @@ type Activity struct {
 	MouseClicks     int       `json:"mouse_clicks" db:"mouse_clicks"`
 	Keystrokes      int       `json:"keystrokes" db:"keystrokes"`
 	MouseDistance   int       `json:"mouse_distance" db:"mouse_distance"`
+	IsMeeting       bool      `json:"is_meeting" db:"is_meeting"`
 	AppIcon         string    `json:"app_icon" db:"app_icon"` // Base64-encoded PNG icon
 	CreatedAt       time.Time `json:"created_at" db:"created_at"`
 }
@@ -73,43 +74,3 @@ type KeyboardInfo struct {
 	LastActivity   time.Time
 }
 
-// SystemInfo represents system state
-type SystemInfo struct {
-	IsIdle        bool
-	IdleDuration  time.Duration
-	LastActivity  time.Time
-}
-
-// BrowserInfo represents browser-specific information
-type BrowserInfo struct {
-	ProcessName string
-	URL         string
-	Title       string
-}
-
-// ActivitySummary represents activity summary data
-type ActivitySummary struct {
-	Date           string                     `json:"date"`
-	TotalTime      time.Duration              `json:"total_time"`
-	Applications   []ApplicationUsage         `json:"applications"`
-	Screenshots    []Screenshot               `json:"screenshots"`
-}
-
-// ApplicationUsage represents application usage statistics
-type ApplicationUsage struct {
-	Name         string        `json:"name"`
-	Duration     time.Duration `json:"duration"`
-	Sessions     int           `json:"sessions"`
-	FirstSession time.Time     `json:"first_session"`
-	LastSession  time.Time     `json:"last_session"`
-}
-
-// Settings represents user settings (simplified)
-type Settings struct {
-	UserID                 int    `json:"user_id"`
-	EnableScreenshots      bool   `json:"enable_screenshots"`
-	ScreenshotInterval     int    `json:"screenshot_interval"`
-	EnableBrowserTracking  bool   `json:"enable_browser_tracking"`
-	EnableIdleDetection    bool   `json:"enable_idle_detection"`
-	IdleTimeout            int    `json:"idle_timeout"`
-}

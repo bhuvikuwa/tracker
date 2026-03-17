@@ -6,7 +6,7 @@ package activity
 import (
 	"strings"
 
-	"desktime-tracker/internal/config"
+	"ktracker/internal/config"
 )
 
 // BrowserManager manages browser-specific functionality

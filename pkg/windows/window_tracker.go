@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"sync"
 	"syscall"
 	"unsafe"
 
-	"desktime-tracker/internal/models"
+	"ktracker/internal/models"
 
 	"github.com/lxn/win"
 	"golang.org/x/sys/windows"
@@ -48,11 +49,42 @@ var (
 )
 
 // WindowTracker tracks active windows
-type WindowTracker struct{}
+type WindowTracker struct {
+	// Icon cache: maps executable path to base64-encoded icon
+	iconCache map[string]string
+	iconMu    sync.RWMutex
+}
 
 // NewWindowTracker creates a new window tracker
 func NewWindowTracker() (*WindowTracker, error) {
-	return &WindowTracker{}, nil
+	return &WindowTracker{
+		iconCache: make(map[string]string),
+	}, nil
+}
+
+// getIconCached returns cached icon or extracts and caches it
+func (wt *WindowTracker) getIconCached(executablePath string) string {
+	if executablePath == "" {
+		return ""
+	}
+
+	// Check cache first (read lock)
+	wt.iconMu.RLock()
+	if icon, exists := wt.iconCache[executablePath]; exists {
+		wt.iconMu.RUnlock()
+		return icon
+	}
+	wt.iconMu.RUnlock()
+
+	// Not in cache, extract icon (this is the slow operation)
+	icon := wt.ExtractIconBase64(executablePath)
+
+	// Store in cache (write lock)
+	wt.iconMu.Lock()
+	wt.iconCache[executablePath] = icon
+	wt.iconMu.Unlock()
+
+	return icon
 }
 
 // utf16ToString converts UTF16 to string
@@ -133,49 +165,11 @@ func (wt *WindowTracker) GetActiveWindow() (*models.WindowInfo, error) {
 			260)
 		windowInfo.ExecutablePath = utf16ToString(executablePathBuf)
 
-		// Extract app icon as base64 PNG
-		windowInfo.AppIcon = wt.ExtractIconBase64(windowInfo.ExecutablePath)
+		// Get app icon from cache (or extract and cache if not found)
+		windowInfo.AppIcon = wt.getIconCached(windowInfo.ExecutablePath)
 	}
 
 	return windowInfo, nil
-}
-
-// EnumWindows enumerates all visible windows
-func (wt *WindowTracker) EnumWindows() ([]*models.WindowInfo, error) {
-	var windowList []*models.WindowInfo
-
-	enumProc := syscall.NewCallback(func(hwnd syscall.Handle, lParam uintptr) uintptr {
-		visible, _, _ := procIsWindowVisible.Call(uintptr(hwnd))
-		if visible == 0 {
-			return 1 // Continue enumeration
-		}
-
-		// Get window title length
-		titleLength, _, _ := procGetWindowTextLengthW.Call(uintptr(hwnd))
-		if titleLength == 0 {
-			return 1 // Skip windows without titles
-		}
-
-		windowInfo := &models.WindowInfo{
-			Handle: uintptr(hwnd),
-		}
-
-		// Get window title
-		titleBuf := make([]uint16, titleLength+1)
-		procGetWindowTextW.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&titleBuf[0])), titleLength+1)
-		windowInfo.WindowTitle = utf16ToString(titleBuf)
-
-		// Get process ID
-		var processID uint32
-		procGetWindowThreadProcessId.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&processID)))
-		windowInfo.ProcessID = processID
-
-		windowList = append(windowList, windowInfo)
-		return 1 // Continue enumeration
-	})
-
-	user32.NewProc("EnumWindows").Call(enumProc, 0)
-	return windowList, nil
 }
 
 // ICONINFO structure for GetIconInfo

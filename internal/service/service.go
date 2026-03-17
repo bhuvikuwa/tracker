@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"desktime-tracker/internal/config"
-	"desktime-tracker/internal/storage"
+	"ktracker/internal/config"
+	"ktracker/internal/storage"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"

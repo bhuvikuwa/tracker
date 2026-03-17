@@ -3,13 +3,14 @@ package activity
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
-	"desktime-tracker/internal/config"
-	"desktime-tracker/internal/models"
-	"desktime-tracker/internal/storage"
-	"desktime-tracker/pkg/windows"
+	"ktracker/internal/config"
+	"ktracker/internal/models"
+	"ktracker/internal/storage"
+	"ktracker/pkg/windows"
 
 	"github.com/sirupsen/logrus"
 )
@@ -35,8 +36,9 @@ type Tracker struct {
 	db            *storage.Database
 	windowTracker *windows.WindowTracker
 	browserMgr    *BrowserManager
-	idleDetector  *IdleDetector
-	currentApp    *models.Activity
+	idleDetector    *IdleDetector
+	meetingDetector *MeetingDetector
+	currentApp      *models.Activity
 	mu            sync.RWMutex
 	stats         *Stats
 	lastActivity  time.Time
@@ -65,12 +67,15 @@ func NewTracker(cfg *config.Config, db *storage.Database) (*Tracker, error) {
 	
 	idleDetector := NewIdleDetector(time.Duration(cfg.Tracking.IdleTimeout) * time.Second)
 
+	meetingDetector := NewMeetingDetector()
+
 	return &Tracker{
-		cfg:           cfg,
-		db:            db,
-		windowTracker: windowTracker,
-		browserMgr:    browserMgr,
-		idleDetector:  idleDetector,
+		cfg:             cfg,
+		db:              db,
+		windowTracker:   windowTracker,
+		browserMgr:      browserMgr,
+		idleDetector:    idleDetector,
+		meetingDetector: meetingDetector,
 		lastActivity:  time.Now().Add(-15 * time.Second), // Start as inactive (last activity 15 seconds ago)
 		isActive:      false, // Start as inactive
 		stats: &Stats{
@@ -145,15 +150,58 @@ func (t *Tracker) trackCurrentActivity() {
 		return
 	}
 
+	// Skip tracking for Windows lock screen and system apps that indicate user is away
+	processNameLower := strings.ToLower(windowInfo.ProcessName)
+	if processNameLower == "lockapp.exe" || processNameLower == "logonui.exe" {
+		logrus.Infof("LOCK SCREEN detected: %s - finalizing activity", windowInfo.ProcessName)
+		// Finalize any current activity since user locked the system
+		if t.currentApp != nil {
+			t.mu.Lock()
+			lastActiveTime := t.lastActivity
+			t.mu.Unlock()
+			logrus.Infof("FINALIZING due to LOCK SCREEN: app=%s, lastActivity=%v",
+				t.currentApp.AppName, lastActiveTime.Format("15:04:05"))
+			t.finalizeActivityAtTime(lastActiveTime)
+		}
+		return
+	}
+
 	// Log current active window for debugging
 	logrus.Debugf("Active window: %s - %s", windowInfo.ProcessName, windowInfo.WindowTitle)
 
-	// Check if user has been inactive for more than 120 seconds (no mouse/keyboard activity)
-	t.mu.Lock()
-	timeSinceLastActivity := time.Since(t.lastActivity)
-	isUserActive := timeSinceLastActivity < 120*time.Second
+	// Get browser information BEFORE idle check (needed for meeting detection)
+	var browserURL, browserTitle string
+	if t.browserMgr.IsBrowser(windowInfo.ProcessName) {
+		url, title := t.browserMgr.GetBrowserInfo(windowInfo.Handle, int32(windowInfo.ProcessID), windowInfo.ProcessName, windowInfo.WindowTitle)
+		browserURL = url
+		browserTitle = title
+	}
+
+	// Check if the user is in a meeting — if so, skip idle detection entirely
+	isMeeting := t.meetingDetector.IsMeeting(windowInfo.ProcessName, windowInfo.WindowTitle, browserURL)
+
+	var idleDuration time.Duration
+	var isUserIdle, isUserActive bool
+
+	if isMeeting {
+		// Meeting detected — force active, skip idle check
+		isUserIdle = false
+		isUserActive = true
+		logrus.Debugf("Meeting detected (%s), skipping idle check", windowInfo.ProcessName)
+	} else {
+		// Normal idle detection
+		idleDuration = t.idleDetector.GetIdleDuration()
+		isUserIdle = t.idleDetector.IsIdle()
+		isUserActive = !isUserIdle
+	}
+
+	t.meetingDetector.SetWasMeeting(isMeeting)
+
+	// Debug: Log idle check every time (to trace the issue)
+	logrus.Debugf("IdleCheck: duration=%v, isIdle=%v, isMeeting=%v, hasCurrentApp=%v", idleDuration, isUserIdle, isMeeting, t.currentApp != nil)
 
 	// Check if activity status has changed
+	t.mu.Lock()
 	if t.isActive != isUserActive {
 		t.isActive = isUserActive
 		if t.onActivityChange != nil {
@@ -162,45 +210,29 @@ func (t *Tracker) trackCurrentActivity() {
 		if isUserActive {
 			logrus.Infof("Activity status changed to ACTIVE")
 		} else {
-			logrus.Infof("Activity status changed to IDLE (no mouse/keyboard for %v)", timeSinceLastActivity)
+			logrus.Infof("Activity status changed to IDLE (no input for %v)", idleDuration)
 		}
 	}
 	t.mu.Unlock()
 
-	// If user is idle, finalize current activity but continue tracking
-	// When user resumes, we'll start a new activity
+	// If user is idle (no recent input), finalize current activity and STOP
+	// Do not track anything until user provides input again
 	if !isUserActive {
 		if t.currentApp != nil {
-			t.mu.Lock()
 			// End activity at the time of last user input, not now
-			lastActiveTime := t.lastActivity
-			t.mu.Unlock()
+			lastActiveTime := t.idleDetector.GetLastActivityTime()
+			logrus.Infof("FINALIZING due to IDLE: app=%s, idleDuration=%v, lastActiveTime=%v",
+				t.currentApp.AppName, idleDuration, lastActiveTime.Format("15:04:05"))
 			t.finalizeActivityAtTime(lastActiveTime)
 		}
-		// Don't return - continue to track the current window so we can start fresh when user resumes
-	}
-
-	// Get browser information if it's a browser
-	var browserURL, browserTitle string
-	if t.browserMgr.IsBrowser(windowInfo.ProcessName) {
-		url, title := t.browserMgr.GetBrowserInfo(windowInfo.Handle, int32(windowInfo.ProcessID), windowInfo.ProcessName, windowInfo.WindowTitle)
-		browserURL = url
-		browserTitle = title
+		// STOP - don't track anything until user provides input
+		return
 	}
 
 	currentTime := time.Now()
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	// Calculate start time for new activity:
-	// - If idle <= 120 sec: use lastActivity (include idle time in new activity)
-	// - If idle > 120 sec: use currentTime (start fresh)
-	startTimeForNewActivity := currentTime
-	if timeSinceLastActivity <= 120*time.Second {
-		// User was idle 2 min or less, include idle time
-		startTimeForNewActivity = t.lastActivity
-	}
 
 	// Check if URL changed for browser windows
 	urlChanged := false
@@ -212,10 +244,17 @@ func (t *Tracker) trackCurrentActivity() {
 		urlChanged = (currentURL != browserURL)
 	}
 
-	// Check if we need to end the previous activity
-	if t.currentApp != nil && (t.currentApp.AppName != windowInfo.ProcessName ||
+	// Track if we're ending an activity due to window change (for seamless transition)
+	var previousActivityEndTime time.Time
+	endingDueToWindowChange := t.currentApp != nil && (t.currentApp.AppName != windowInfo.ProcessName ||
 		t.currentApp.WindowTitle != windowInfo.WindowTitle ||
-		urlChanged) {
+		urlChanged)
+
+	// Check if we need to end the previous activity
+	if endingDueToWindowChange {
+		previousActivityEndTime = currentTime
+		logrus.Infof("WINDOW CHANGE: ending %s at %s, starting %s",
+			t.currentApp.AppName, currentTime.Format("15:04:05"), windowInfo.ProcessName)
 		t.endCurrentActivity(currentTime, true)
 	}
 
@@ -223,7 +262,18 @@ func (t *Tracker) trackCurrentActivity() {
 	if t.currentApp == nil || t.currentApp.AppName != windowInfo.ProcessName ||
 		t.currentApp.WindowTitle != windowInfo.WindowTitle ||
 		urlChanged {
-		t.startNewActivity(windowInfo, browserURL, browserTitle, startTimeForNewActivity, isUserActive)
+		// Determine start time for new activity:
+		// - If previous activity just ended (window change while working): use previous EndTime (no gap)
+		// - If starting fresh after idle period: use current time (gap shows actual idle time)
+		startTimeForNewActivity := currentTime
+		if !previousActivityEndTime.IsZero() {
+			// Seamless transition - new activity starts exactly when previous ended
+			startTimeForNewActivity = previousActivityEndTime
+			logrus.Infof("NEW ACTIVITY (seamless): %s starting at %s", windowInfo.ProcessName, startTimeForNewActivity.Format("15:04:05"))
+		} else {
+			logrus.Infof("NEW ACTIVITY (fresh): %s starting at %s (currentApp was nil)", windowInfo.ProcessName, startTimeForNewActivity.Format("15:04:05"))
+		}
+		t.startNewActivity(windowInfo, browserURL, browserTitle, startTimeForNewActivity, isUserActive, isMeeting)
 	}
 
 	// Update current activity end time (only if user is active)
@@ -231,12 +281,26 @@ func (t *Tracker) trackCurrentActivity() {
 		t.currentApp.EndTime = currentTime
 		t.currentApp.DurationSeconds = int(currentTime.Sub(t.currentApp.StartTime).Seconds())
 		t.currentApp.IsActive = true
+
+		// Keep IsMeeting flag up to date (user may join a call mid-activity)
+		if isMeeting {
+			t.currentApp.IsMeeting = true
+		}
+
+		// Flush activity every 1 minute to prevent data loss.
+		// Sends the current chunk and starts a new one for the same app.
+		if t.currentApp.DurationSeconds >= 60 {
+			logrus.Infof("1-MIN FLUSH: app=%s, duration=%ds, isMeeting=%v",
+				t.currentApp.AppName, t.currentApp.DurationSeconds, t.currentApp.IsMeeting)
+			t.endCurrentActivity(currentTime, true)
+			t.startNewActivity(windowInfo, browserURL, browserTitle, currentTime, isUserActive, isMeeting)
+		}
 	}
 }
 
 // startNewActivity starts tracking a new activity
 func (t *Tracker) startNewActivity(windowInfo *models.WindowInfo, browserURL, browserTitle string,
-	startTime time.Time, isActive bool) {
+	startTime time.Time, isActive bool, isMeeting bool) {
 
 	t.currentApp = &models.Activity{
 		UserID:          1, // Default user ID
@@ -246,6 +310,7 @@ func (t *Tracker) startNewActivity(windowInfo *models.WindowInfo, browserURL, br
 		EndTime:         startTime,
 		DurationSeconds: 0,
 		IsActive:        isActive,
+		IsMeeting:       isMeeting,
 		AppIcon:         windowInfo.AppIcon, // Copy app icon from window info
 	}
 
@@ -371,12 +436,20 @@ func (t *Tracker) GetLastActivity() time.Time {
 func (t *Tracker) GetCurrentActivity() *models.Activity {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	
+
 	if t.currentApp == nil {
 		return nil
 	}
-	
+
 	// Return a copy to avoid race conditions
 	activity := *t.currentApp
 	return &activity
+}
+
+// SetIdleTimeout updates the idle timeout duration
+func (t *Tracker) SetIdleTimeout(seconds int) {
+	if seconds > 0 {
+		t.idleDetector.SetIdleTimeout(time.Duration(seconds) * time.Second)
+		logrus.Infof("Idle timeout updated to %d seconds", seconds)
+	}
 }

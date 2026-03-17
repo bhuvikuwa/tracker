@@ -48,9 +48,13 @@ type UserConfig struct {
 	IsLoggedIn bool   `yaml:"is_logged_in"`
 	Email      string `yaml:"email"`
 	// Feature settings from server
-	Screenshots bool `yaml:"screenshots"` // Whether to capture and send screenshots
-	Logout      bool `yaml:"logout"`      // Whether to show logout menu
-	ExitApp     bool `yaml:"exit_app"`    // Whether to show exit menu
+	Screenshots    bool `yaml:"screenshots"`     // Whether to capture and send screenshots
+	ScreenshotTime int  `yaml:"screenshot_time"` // Screenshot interval in seconds (from server)
+	Logout         bool `yaml:"logout"`          // Whether to show logout menu
+	ExitApp        bool `yaml:"exit_app"`        // Whether to show exit menu
+	// Server URLs (fetched from app_config.php, persisted locally)
+	APIURL     string `yaml:"api_url"`     // API endpoint for data collection
+	WebsiteURL string `yaml:"website_url"` // Website base URL for login/dashboard
 }
 
 // Load loads configuration from file
@@ -95,27 +99,15 @@ func setDefaults(config *Config) {
 	config.Service.LogLevel = "debug"
 
 	// Tracking defaults
-	config.Tracking.ScreenshotInterval = 30  // 30 seconds
-	config.Tracking.ActivityInterval = 1     // 1 second
-	config.Tracking.IdleTimeout = 180        // 3 minutes
-
-	// API defaults (hardcoded)
-	config.API.BaseURL = "https://desktime.kuware.com/collect_data.php"
-
-	// Website defaults (hardcoded)
-	config.Website.BaseURL = "https://desktime.kuware.com"
-	config.Website.Port = 8080
+	config.Tracking.ScreenshotInterval = 30 // 30 seconds
+	config.Tracking.ActivityInterval = 1    // 1 second
+	config.Tracking.IdleTimeout = 180       // 3 minutes
 
 	// User defaults
 	config.User.IsLoggedIn = false
 }
 
 func validateConfig(config *Config) error {
-	// Validate API configuration
-	if config.API.BaseURL == "" {
-		return fmt.Errorf("API base URL cannot be empty")
-	}
-
 	// Validate intervals
 	if config.Tracking.ActivityInterval < 1 {
 		config.Tracking.ActivityInterval = 1
@@ -194,13 +186,16 @@ func (c *Config) SaveUserData() error {
 
 	// Only save user-related fields
 	userData := UserConfig{
-		Username:   c.User.Username,
-		AppCode:    c.User.AppCode,
-		IsLoggedIn: c.User.IsLoggedIn,
-		Email:      c.User.Email,
-		Screenshots: c.User.Screenshots,
-		Logout:      c.User.Logout,
-		ExitApp:     c.User.ExitApp,
+		Username:       c.User.Username,
+		AppCode:        c.User.AppCode,
+		IsLoggedIn:     c.User.IsLoggedIn,
+		Email:          c.User.Email,
+		Screenshots:    c.User.Screenshots,
+		ScreenshotTime: c.User.ScreenshotTime,
+		Logout:         c.User.Logout,
+		ExitApp:        c.User.ExitApp,
+		APIURL:         c.User.APIURL,
+		WebsiteURL:     c.User.WebsiteURL,
 	}
 
 	var buf bytes.Buffer
@@ -242,6 +237,14 @@ func (c *Config) LoadUserData() error {
 
 	// Apply loaded user data to config
 	c.User = userData
+
+	// Apply persisted URLs to runtime config
+	if c.User.APIURL != "" {
+		c.API.BaseURL = c.User.APIURL
+	}
+	if c.User.WebsiteURL != "" {
+		c.Website.BaseURL = c.User.WebsiteURL
+	}
 
 	return nil
 }

@@ -8,8 +8,8 @@ IDI_ICON1 ICON "../../icons/ktracker.ico"
 
 // Version information
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,0,0,0
-PRODUCTVERSION  1,0,0,0
+FILEVERSION     3,4,0,0
+PRODUCTVERSION  3,4,0,0
 FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
 FILEFLAGS       0
 FILEOS          VOS_NT_WINDOWS32
@@ -22,12 +22,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "KTracker"
             VALUE "FileDescription", "KTracker Activity Tracker"
-            VALUE "FileVersion", "1.0.0.0"
+            VALUE "FileVersion", "3.4.0.0"
             VALUE "InternalName", "KTracker"
             VALUE "LegalCopyright", "Copyright (C) 2025"
             VALUE "OriginalFilename", "KTracker.exe"
             VALUE "ProductName", "KTracker"
-            VALUE "ProductVersion", "1.0.0.0"
+            VALUE "ProductVersion", "3.4.0.0"
         END
     END
     BLOCK "VarFileInfo"

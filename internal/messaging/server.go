@@ -7,16 +7,21 @@ import (
 	"sync"
 	"time"
 
-	"desktime-tracker/internal/config"
+	"ktracker/internal/config"
 
 	"github.com/sirupsen/logrus"
 )
 
 // LoginMessage represents a login message from the web app
 type LoginMessage struct {
-	Username string `json:"username"`
-	AppCode  string `json:"app_code"`
-	Action   string `json:"action"` // "login" or "logout"
+	Username       string `json:"username"`
+	AppCode        string `json:"app_code"`
+	Action         string `json:"action"` // "login" or "logout"
+	Email          string `json:"email"`
+	Screenshots    int    `json:"screenshots"`
+	ScreenshotTime int    `json:"screenshots_timing"`
+	Logout         int    `json:"logout"`
+	ExitApp        int    `json:"exit_app"`
 }
 
 // MessageCallback is called when a message is received
@@ -66,7 +71,7 @@ func (ms *MessagingServer) Start() error {
 	}
 
 	ms.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
+		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
 		Handler: ms.enableCORS(mux),
 	}
 
@@ -154,7 +159,7 @@ func (ms *MessagingServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (ms *MessagingServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	status := map[string]interface{}{
 		"status":    "running",
-		"message":   "DeskTime Tracker is running",
+		"message":   "KTracker is running",
 		"timestamp": time.Now().Unix(),
 	}
 

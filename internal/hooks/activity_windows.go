@@ -3,7 +3,9 @@
 package hooks
 
 import (
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -50,37 +52,40 @@ var (
 	procUnhookWindowsHookEx = user32.NewProc("UnhookWindowsHookEx")
 	procCallNextHookEx      = user32.NewProc("CallNextHookEx")
 	procGetMessage          = user32.NewProc("GetMessageW")
+	procPostThreadMessage   = user32.NewProc("PostThreadMessageW")
 	procGetCursorPos        = user32.NewProc("GetCursorPos")
 	procGetModuleHandle     = kernel32.NewProc("GetModuleHandleW")
+	procGetCurrentThreadId  = kernel32.NewProc("GetCurrentThreadId")
 )
+
+const WM_QUIT = 0x0012
 
 // ActivityDetector tracks real mouse and keyboard activity on Windows
 type ActivityDetector struct {
 	mouseHook     uintptr
 	keyboardHook  uintptr
-	lastActivity  time.Time
-	onActivity    ActivityCallback
+	threadID      uint32 // OS thread ID of the hook goroutine (for posting WM_QUIT)
+	lastActivity  int64 // Unix nano timestamp (atomic)
+	onActivity    atomic.Value // stores ActivityCallback
 	running       bool
 	mu            sync.RWMutex
-	lastMouseX    int32
-	lastMouseY    int32
-	mouseDistance int
-	clickCount    int
-	keyCount      int
+	lastMouseX    int32 // atomic
+	lastMouseY    int32 // atomic
+	mouseDistance int32 // atomic
+	clickCount    int32 // atomic
+	keyCount      int32 // atomic
 }
 
 // NewActivityDetector creates a new Windows activity detector
 func NewActivityDetector() *ActivityDetector {
-	return &ActivityDetector{
-		lastActivity: time.Now(),
-	}
+	ad := &ActivityDetector{}
+	atomic.StoreInt64(&ad.lastActivity, time.Now().UnixNano())
+	return ad
 }
 
 // SetActivityCallback sets the callback for activity detection
 func (ad *ActivityDetector) SetActivityCallback(callback ActivityCallback) {
-	ad.mu.Lock()
-	defer ad.mu.Unlock()
-	ad.onActivity = callback
+	ad.onActivity.Store(callback)
 }
 
 // Start starts the activity detection
@@ -105,28 +110,46 @@ func (ad *ActivityDetector) Start() error {
 func (ad *ActivityDetector) Stop() {
 	ad.mu.Lock()
 	defer ad.mu.Unlock()
-	
+
 	if !ad.running {
 		return
 	}
-	
+
 	ad.running = false
-	
+
 	if ad.mouseHook != 0 {
 		procUnhookWindowsHookEx.Call(ad.mouseHook)
 		ad.mouseHook = 0
 	}
-	
+
 	if ad.keyboardHook != 0 {
 		procUnhookWindowsHookEx.Call(ad.keyboardHook)
 		ad.keyboardHook = 0
 	}
-	
+
+	// Post WM_QUIT to the hook thread to unblock GetMessage
+	if ad.threadID != 0 {
+		procPostThreadMessage.Call(uintptr(ad.threadID), WM_QUIT, 0, 0)
+	}
+
 	logrus.Info("Stopped Windows activity detector")
 }
 
 // installHooks installs the Windows hooks
 func (ad *ActivityDetector) installHooks() {
+	// CRITICAL: Lock this goroutine to the current OS thread.
+	// Windows hooks require the message pump to run on the same thread
+	// that installed the hooks. Without this, Go may migrate the goroutine
+	// to a different OS thread, causing hooks to stop working or hang.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	// Store thread ID so Stop() can post WM_QUIT to unblock GetMessage
+	tid, _, _ := procGetCurrentThreadId.Call()
+	ad.mu.Lock()
+	ad.threadID = uint32(tid)
+	ad.mu.Unlock()
+
 	// Get module handle
 	hMod, _, _ := procGetModuleHandle.Call(0)
 	
@@ -183,96 +206,95 @@ func (ad *ActivityDetector) installHooks() {
 }
 
 // mouseProc processes mouse events
+// IMPORTANT: This is a low-level hook callback - must return quickly to avoid mouse hanging
 func (ad *ActivityDetector) mouseProc(nCode int, wParam uintptr, lParam uintptr) uintptr {
 	if nCode >= 0 {
 		info := (*MSLLHOOKSTRUCT)(unsafe.Pointer(lParam))
-		
-		ad.mu.Lock()
-		callback := ad.onActivity
-		
+
+		// Load callback once - no mutex, use atomic
+		var callback ActivityCallback
+		if cb := ad.onActivity.Load(); cb != nil {
+			callback = cb.(ActivityCallback)
+		}
+
 		switch wParam {
 		case WM_MOUSEMOVE:
-			// Calculate distance moved
-			if ad.lastMouseX != 0 || ad.lastMouseY != 0 {
-				deltaX := info.Pt.X - ad.lastMouseX
-				deltaY := info.Pt.Y - ad.lastMouseY
-				distance := int(deltaX*deltaX + deltaY*deltaY)
-				
+			// Calculate distance moved using atomic loads
+			lastX := atomic.LoadInt32(&ad.lastMouseX)
+			lastY := atomic.LoadInt32(&ad.lastMouseY)
+
+			if lastX != 0 || lastY != 0 {
+				deltaX := info.Pt.X - lastX
+				deltaY := info.Pt.Y - lastY
+				distance := int32(deltaX*deltaX + deltaY*deltaY)
+
 				if distance > 100 { // Only count significant movements
-					ad.mouseDistance += distance
-					ad.lastActivity = time.Now()
-					
+					atomic.AddInt32(&ad.mouseDistance, distance)
+					atomic.StoreInt64(&ad.lastActivity, time.Now().UnixNano())
+
 					if callback != nil {
 						go callback()
 					}
 				}
 			}
-			ad.lastMouseX = info.Pt.X
-			ad.lastMouseY = info.Pt.Y
-			
+			atomic.StoreInt32(&ad.lastMouseX, info.Pt.X)
+			atomic.StoreInt32(&ad.lastMouseY, info.Pt.Y)
+
 		case WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN:
-			ad.clickCount++
-			ad.lastActivity = time.Now()
-			
+			atomic.AddInt32(&ad.clickCount, 1)
+			atomic.StoreInt64(&ad.lastActivity, time.Now().UnixNano())
+
 			if callback != nil {
 				go callback()
 			}
-			logrus.Debugf("Mouse click detected, total: %d", ad.clickCount)
-			
+
 		case WM_MOUSEWHEEL:
-			ad.lastActivity = time.Now()
-			
+			atomic.StoreInt64(&ad.lastActivity, time.Now().UnixNano())
+
 			if callback != nil {
 				go callback()
 			}
 		}
-		
-		ad.mu.Unlock()
 	}
-	
+
 	ret, _, _ := procCallNextHookEx.Call(0, uintptr(nCode), wParam, lParam)
 	return ret
 }
 
 // keyboardProc processes keyboard events
+// IMPORTANT: This is a low-level hook callback - must return quickly to avoid keyboard hanging
 func (ad *ActivityDetector) keyboardProc(nCode int, wParam uintptr, lParam uintptr) uintptr {
 	if nCode >= 0 {
 		if wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN {
-			ad.mu.Lock()
-			ad.keyCount++
-			ad.lastActivity = time.Now()
-			callback := ad.onActivity
-			ad.mu.Unlock()
-			
-			if callback != nil {
-				go callback()
+			atomic.AddInt32(&ad.keyCount, 1)
+			atomic.StoreInt64(&ad.lastActivity, time.Now().UnixNano())
+
+			// Load callback using atomic
+			if cb := ad.onActivity.Load(); cb != nil {
+				go cb.(ActivityCallback)()
 			}
-			
-			logrus.Debugf("Key press detected, total: %d", ad.keyCount)
 		}
 	}
-	
+
 	ret, _, _ := procCallNextHookEx.Call(0, uintptr(nCode), wParam, lParam)
 	return ret
 }
 
 // GetLastActivity returns the last activity time
 func (ad *ActivityDetector) GetLastActivity() time.Time {
-	ad.mu.RLock()
-	defer ad.mu.RUnlock()
-	return ad.lastActivity
+	nanos := atomic.LoadInt64(&ad.lastActivity)
+	return time.Unix(0, nanos)
 }
 
 // GetStats returns activity statistics
 func (ad *ActivityDetector) GetStats() map[string]interface{} {
-	ad.mu.RLock()
-	defer ad.mu.RUnlock()
-	
+	lastActivityTime := ad.GetLastActivity()
+
 	return map[string]interface{}{
-		"clicks":        ad.clickCount,
-		"keys":          ad.keyCount,
-		"distance":      ad.mouseDistance,
-		"last_activity": ad.lastActivity,
-		"is_active":     time.Since(ad.lastActivity) < 10*time.Second,
+		"clicks":        atomic.LoadInt32(&ad.clickCount),
+		"keys":          atomic.LoadInt32(&ad.keyCount),
+		"distance":      atomic.LoadInt32(&ad.mouseDistance),
+		"last_activity": lastActivityTime,
+		"is_active":     time.Since(lastActivityTime) < 10*time.Second,
 	}
 }

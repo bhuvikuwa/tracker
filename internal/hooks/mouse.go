@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"desktime-tracker/internal/models"
+	"ktracker/internal/models"
 
 	"github.com/sirupsen/logrus"
 )
@@ -177,27 +177,6 @@ func (mh *MouseHook) updateMousePosition() {
 	mh.mu.Unlock()
 }
 
-// OnMouseClick simulates a mouse click event (would be called by actual hook)
-func (mh *MouseHook) OnMouseClick() {
-	mh.mu.Lock()
-	callback := mh.onActivity
-	mh.mouseInfo.ClickCount++
-	mh.mu.Unlock()
-	
-	mh.stats.mu.Lock()
-	mh.stats.TotalClicks++
-	mh.stats.SessionClicks++
-	mh.stats.LastActivity = time.Now()
-	mh.stats.mu.Unlock()
-	
-	logrus.Debugf("Mouse click detected, total: %d", mh.mouseInfo.ClickCount)
-	
-	// Call activity callback
-	if callback != nil {
-		go callback()
-	}
-}
-
 // GetStats returns mouse statistics
 func (mh *MouseHook) GetStats() map[string]interface{} {
 	mh.stats.mu.RLock()
@@ -210,22 +189,6 @@ func (mh *MouseHook) GetStats() map[string]interface{} {
 		"session_distance": mh.stats.SessionDistance,
 		"last_activity":    mh.stats.LastActivity,
 		"uptime_seconds":   int(time.Since(mh.stats.StartTime).Seconds()),
-	}
-}
-
-// GetCurrentInfo returns current mouse information
-func (mh *MouseHook) GetCurrentInfo() *models.MouseInfo {
-	mh.mu.RLock()
-	defer mh.mu.RUnlock()
-	
-	// Return a copy to avoid race conditions
-	return &models.MouseInfo{
-		X:             mh.mouseInfo.X,
-		Y:             mh.mouseInfo.Y,
-		LastX:         mh.mouseInfo.LastX,
-		LastY:         mh.mouseInfo.LastY,
-		ClickCount:    mh.mouseInfo.ClickCount,
-		DistanceMoved: mh.mouseInfo.DistanceMoved,
 	}
 }
 

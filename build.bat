@@ -11,7 +11,7 @@ echo.
 
 REM Set variables
 set APP_NAME=KTracker
-set VERSION=2.0.0
+set VERSION=3.22.0
 set ICON_DIR=icons
 
 REM Check if Go is installed
